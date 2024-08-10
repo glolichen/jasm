@@ -24,7 +24,6 @@ namespace lex {
 		JA, JAE, JB, JBE,
 		CMP, CALL, RET, SYSCALL,
 	};
-	extern const unsigned INSN_OPERANDS[];
 
 	enum RegisterType {
 		REGTYPE_GPR8,
@@ -98,15 +97,17 @@ namespace lex {
 		LEXTYPE_DOLLAR,
 		LEXTYPE_STR_LIT,
 		LEXTYPE_NEWLINE,
+		LEXTYPE_EQU,
 	};
 
 	struct Lexeme {
-		enum LexemeType type;
+		LexemeType type;
 		unsigned line_num;
 		std::variant<std::string, Immediate64, Register, Directive, Instruction, std::monostate> data;
 	};
 
-	void lex(std::vector<std::vector<Lexeme>> &tokens, std::string file_name);
+	void assemble_error(uint32_t line_num, std::string msg);
+	std::vector<std::vector<Lexeme>> lex(std::string file_name);
 }
 
 #endif

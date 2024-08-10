@@ -160,15 +160,6 @@ const std::unordered_map<std::string, lex::Register> REGS = {
 	{ "gs", lex::Register { lex::REGTYPE_SEG, lex::GS } },
 };
 
-extern const unsigned lex::INSN_OPERANDS[] = {
-	2, 2, 1, 1,
-	2, 2, 1, 1, 2, 2,
-	2, 2, 2, 1, 2, 2,
-	1, 1, 1, 1, 1, 1, 1,
-	1, 1, 1, 1,
-	1, 1, 0, 0,
-};
-
 std::string lex::file_name;
 
 const std::unordered_set<char> DELIMS = {
@@ -179,7 +170,7 @@ const std::unordered_set<char> DELIMS = {
 const std::regex HEX_REGEX = std::regex("0x[0-9a-f]+");
 const std::regex DEC_REGEX = std::regex("-?[0-9]+");
 
-inline lex::Immediate64 make_imm(unsigned bits, std::variant<int64_t, uint64_t> val) {
+inline lex::Immediate64 make_imm(uint32_t bits, std::variant<int64_t, uint64_t> val) {
 	uint64_t uval;
 	if (val.index() == 0)
 		uval = (uint64_t) (-std::get<int64_t>(val));
@@ -188,9 +179,10 @@ inline lex::Immediate64 make_imm(unsigned bits, std::variant<int64_t, uint64_t> 
 	return lex::Immediate64 { bits, uval };
 }
 
-void syntax_error(uint32_t line_num, std::string msg) {
+__attribute__((noreturn))
+void lex::assemble_error(uint32_t line_num, std::string msg) {
 	std::stringstream ss;
-	ss << "syntax error on " << lex::file_name << ":" << line_num << ": " << msg;
+	ss << lex::file_name << ":" << line_num << ": assemble error: " << msg;
 	throw std::runtime_error(ss.str());
 }
 
@@ -204,36 +196,35 @@ std::string to_lower(std::string str) {
 std::vector<std::string> split_line(std::string line, uint32_t line_num) {
 	bool is_string_lit = false;
 	std::vector<std::string> ret;
-	std::string current = "";
+	std::string cur = "";
 	for (uint32_t i = 0; i < line.length(); i++) {	
 		char letter = line[i];
 		if (!is_string_lit && DELIMS.count(letter)) {
-			if (current.length() > 0)
-				ret.push_back(to_lower(current));
+			if (cur.length() > 0)
+				ret.push_back(cur);
 			std::string delim(1, letter);
 			ret.push_back(delim);
-			current = "";
+			cur = "";
 			continue;
 		}
-		if (letter == '"') {
+		if (letter == '"')
 			is_string_lit = !is_string_lit;
-			continue;
-		}
-		current += letter;
+		cur += letter;
 	}
 	if (is_string_lit)
-		syntax_error(line_num, "unclosed string literal");
-	if (current.length() > 0)
-		ret.push_back(to_lower(current));
+		lex::assemble_error(line_num, "unclosed string literal");
+	if (cur.length() > 0)
+		ret.push_back(cur);
 	return ret;
 }
 
-void lex::lex(std::vector<std::vector<lex::Lexeme>> &tokens, std::string file_name) {
+std::vector<std::vector<lex::Lexeme>> lex::lex(std::string file_name) {
+	lex::file_name = file_name;
+	
 	std::ifstream file(file_name);
 	std::string line;
 
-	lex::file_name = file_name;
-
+	std::vector<std::vector<lex::Lexeme>> tokens;
 	for (unsigned line_num = 1; std::getline(file, line); line_num++) {
 		uint32_t line_start, line_end;
 		for (line_start = 0; line[line_start] == ' ' || line[line_start] == '\t'; line_start++);
@@ -244,42 +235,45 @@ void lex::lex(std::vector<std::vector<lex::Lexeme>> &tokens, std::string file_na
 		std::vector<lex::Lexeme> ltokens;
 
 		for (const std::string &token : line_tokens_str) {
-			if (token == ",")
+			std::string tk_lower = to_lower(token);
+			if (tk_lower == ",")
 				ltokens.emplace_back(lex::Lexeme { LEXTYPE_COMMA, line_num, std::monostate{} });
-			else if (token == "*")
+			else if (tk_lower == "*")
 				ltokens.emplace_back(lex::Lexeme { LEXTYPE_ASTERISK, line_num, std::monostate{} });
-			else if (token == "+")
+			else if (tk_lower == "+")
 				ltokens.emplace_back(lex::Lexeme { LEXTYPE_ADD_SIGN, line_num, std::monostate{} });
-			else if (token == "-")
+			else if (tk_lower == "-")
 				ltokens.emplace_back(lex::Lexeme { LEXTYPE_MINUS_SIGN, line_num, std::monostate{} });
-			else if (token == "/")
+			else if (tk_lower == "/")
 				ltokens.emplace_back(lex::Lexeme { LEXTYPE_SLASH, line_num, std::monostate{} });
-			else if (token == "[")
+			else if (tk_lower == "[")
 				ltokens.emplace_back(lex::Lexeme { LEXTYPE_OPEN_BRACKET, line_num, std::monostate{} });
-			else if (token == "]")
+			else if (tk_lower == "]")
 				ltokens.emplace_back(lex::Lexeme { LEXTYPE_CLOSE_BRACKET, line_num, std::monostate{} });
-			else if (token == ":")
+			else if (tk_lower == ":")
 				ltokens.emplace_back(lex::Lexeme { LEXTYPE_COLON, line_num, std::monostate{} });
-			else if (token == "$")
+			else if (tk_lower == "$")
 				ltokens.emplace_back(lex::Lexeme { LEXTYPE_DOLLAR, line_num, std::monostate{} });
-			else if (INSNS.count(token))
-				ltokens.emplace_back(lex::Lexeme { LEXTYPE_INSN, line_num, INSNS.find(token)->second });
-			else if (DIRECTIVES.count(token))
-				ltokens.emplace_back(lex::Lexeme { LEXTYPE_DIRECTIVE, line_num, DIRECTIVES.find(token)->second });
-			else if (REGS.count(token))
-				ltokens.emplace_back(lex::Lexeme { LEXTYPE_REG, line_num, REGS.find(token)->second });
+			else if (tk_lower == "equ")
+				ltokens.emplace_back(lex::Lexeme { LEXTYPE_EQU, line_num, std::monostate {} });
+			else if (INSNS.count(tk_lower))
+				ltokens.emplace_back(lex::Lexeme { LEXTYPE_INSN, line_num, INSNS.find(tk_lower)->second });
+			else if (DIRECTIVES.count(tk_lower))
+				ltokens.emplace_back(lex::Lexeme { LEXTYPE_DIRECTIVE, line_num, DIRECTIVES.find(tk_lower)->second });
+			else if (REGS.count(tk_lower))
+				ltokens.emplace_back(lex::Lexeme { LEXTYPE_REG, line_num, REGS.find(tk_lower)->second });
 			else {
-				bool is_dec = std::regex_match(token, DEC_REGEX);
-				bool is_hex = std::regex_match(token, HEX_REGEX);
+				bool is_dec = std::regex_match(tk_lower, DEC_REGEX);
+				bool is_hex = std::regex_match(tk_lower, HEX_REGEX);
 				if (is_dec || is_hex) {
 					size_t len;
-					lex::LexemeType type;  
 					if ((len = ltokens.size()) >= 1 && ltokens[len - 1].type == LEXTYPE_MINUS_SIGN &&
-							(len >= 2 || (ltokens[len - 2].type != LEXTYPE_IMM &&
-							ltokens[len - 2].type != LEXTYPE_REG))) {
+							(len == 1 || (ltokens[len - 2].type != LEXTYPE_IMM &&
+							ltokens[len - 2].type != LEXTYPE_REG &&
+							ltokens[len - 2].type != LEXTYPE_SYMBOL))) {
 
 						ltokens.pop_back();
-						int64_t num = std::stoll(token, nullptr, is_hex ? 16 : 10);
+						int64_t num = std::stoll(tk_lower, nullptr, is_hex ? 16 : 10);
 						if (num >= INT8_MIN && num <= INT8_MAX) 
 							ltokens.emplace_back(lex::Lexeme { LEXTYPE_IMM, line_num, make_imm(8, -num) });
 						else if (num >= INT16_MIN && num <= INT16_MAX)
@@ -290,7 +284,7 @@ void lex::lex(std::vector<std::vector<lex::Lexeme>> &tokens, std::string file_na
 							ltokens.emplace_back(lex::Lexeme { LEXTYPE_IMM, line_num, make_imm(64, -num) });
 					}
 					else {
-						uint64_t num = std::stoull(token, nullptr, is_hex ? 16 : 10);
+						uint64_t num = std::stoull(tk_lower, nullptr, is_hex ? 16 : 10);
 						if (num <= UINT8_MAX)
 							ltokens.emplace_back(lex::Lexeme { LEXTYPE_IMM, line_num, make_imm(8, num) });
 						else if (num <= UINT16_MAX)
@@ -301,10 +295,12 @@ void lex::lex(std::vector<std::vector<lex::Lexeme>> &tokens, std::string file_na
 							ltokens.emplace_back(lex::Lexeme { LEXTYPE_IMM, line_num, make_imm(64, num) });
 					}
 				}
-				else if (token.length() >= 2 && token[0] == '"' && token[token.length() - 1] == '"')
-					ltokens.emplace_back(lex::Lexeme { LEXTYPE_STR_LIT, line_num, token });
-				else if (token != " ")
-					ltokens.emplace_back(lex::Lexeme { LEXTYPE_SYMBOL, line_num, token });
+				else if (tk_lower.length() >= 2 && tk_lower[0] == '"' && tk_lower[tk_lower.length() - 1] == '"') {
+					std::string lit = token.substr(1, token.size() - 2);
+					ltokens.emplace_back(lex::Lexeme { LEXTYPE_STR_LIT, line_num, lit });
+				}
+				else if (tk_lower != " ")
+					ltokens.emplace_back(lex::Lexeme { LEXTYPE_SYMBOL, line_num, tk_lower });
 			}
 		}
 		if (ltokens.size())
@@ -315,70 +311,32 @@ void lex::lex(std::vector<std::vector<lex::Lexeme>> &tokens, std::string file_na
 
 	for (std::vector<lex::Lexeme> &ltokens : tokens) {
 		uint32_t bracket_count = 0;
-		for (int i = 0; i < ltokens.size(); i++) {
+		for (size_t i = 0; i < ltokens.size(); i++) {
 			lex::Lexeme lexeme = ltokens[i];   
-			bool is_add = lexeme.type == LEXTYPE_ADD_SIGN;
-			bool is_sub = lexeme.type == LEXTYPE_MINUS_SIGN;
-			bool is_mul = lexeme.type == LEXTYPE_ASTERISK;
-			bool is_div = lexeme.type == LEXTYPE_SLASH;
-
-			if (is_add || is_sub || is_mul || is_div) {
-				if (i == 0 || i == ltokens.size() - 1)
-					syntax_error(lexeme.line_num, "");
-				if (ltokens[i - 1].type == LEXTYPE_IMM && ltokens[i + 1].type == LEXTYPE_IMM) {
-					uint64_t o1 = std::get<lex::Immediate64>(ltokens[i - 1].data).val;
-					uint64_t o2 = std::get<lex::Immediate64>(ltokens[i + 1].data).val;
-					uint64_t result;
-					if (is_add) result = o1 + o2;
-					if (is_sub) result = o1 - o2;
-					if (is_mul) result = o1 * o2;
-					if (is_div) result = o1 / o2;
-
-					uint32_t size = 64;
-					if (result <= UINT8_MAX) size = 8;
-					else if (result <= UINT16_MAX) size = 16;
-					else if (result <= UINT32_MAX) size = 32;
-					
-					ltokens[i + 1].data.emplace<lex::Immediate64>(lex::Immediate64 { size, result });
-					ltokens.erase(std::next(ltokens.begin(), i - 1), std::next(ltokens.begin(), i + 1));
-					i -= 2;  
-				} 
-				else if ((ltokens[i - 1].type != LEXTYPE_IMM && ltokens[i + 1].type != LEXTYPE_IMM) &&
-						 (ltokens[i - 1].type != LEXTYPE_REG && ltokens[i + 1].type != LEXTYPE_REG) &&
-						 (ltokens[i - 1].type != LEXTYPE_DOLLAR && ltokens[i + 1].type != LEXTYPE_DOLLAR))
-					syntax_error(lexeme.line_num, "");
-
-				continue;
-			}
-
 			if (lexeme.type == LEXTYPE_OPEN_BRACKET)
 				bracket_count++;
 			if (lexeme.type == LEXTYPE_CLOSE_BRACKET)
 				bracket_count--;
 
 			if (bracket_count != 0 && bracket_count != 1)
-				syntax_error(lexeme.line_num, "bracket error");
-			if (i == ltokens.size() - 1) {
-				if (bracket_count)
-					syntax_error(lexeme.line_num, "bracket error");
-				bracket_count = 0;
-				continue;
-			}
+				lex::assemble_error(lexeme.line_num, "bracket error");
 
 			if (lexeme.type == LEXTYPE_COLON) {
 				if (i == 0)
-					syntax_error(lexeme.line_num, "colon cannot be first character in line");
-				if (i != ltokens.size() - 1)
-					syntax_error(lexeme.line_num, "label must be followed by new line");
+					lex::assemble_error(lexeme.line_num, "colon cannot be first character in line");
+				if (i != ltokens.size() - 1 || ltokens.size() != 2)
+					lex::assemble_error(lexeme.line_num, "line must only contain label");
 				if (ltokens[i - 1].type != LEXTYPE_SYMBOL)
-					syntax_error(lexeme.line_num, "invalid label name");
-				if (i >= 2 && ltokens[i - 2].type != LEXTYPE_NEWLINE)
-					syntax_error(lexeme.line_num, "label must be only symbol in line");
+					lex::assemble_error(lexeme.line_num, "invalid label name");
 				continue;
 			}
 
 			// TODO: add other syntax checks
 		}
+		if (bracket_count)
+			lex::assemble_error(ltokens[0].line_num, "bracket error");
 	}
+
+	return tokens;
 }
 

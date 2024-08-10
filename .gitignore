@@ -1,4 +1,4 @@
-file.o
+*.o
 a.out
 jasm
 
